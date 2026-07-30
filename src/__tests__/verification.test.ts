@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
-import type { Client, GuildMember, ThreadChannel } from 'discord.js';
+import type { Client, GuildMember } from 'discord.js';
 import {
   assignUnverifiedRole,
   registerVerificationListeners,
-  verifyIntroductionThreadCreator,
 } from '../verification';
 import {
   mockDiscordChannel,
@@ -11,7 +10,6 @@ import {
   resetMockDiscordClient,
 } from './mockDiscordClient';
 
-const INTRODUCE_YOURSELF_CHANNEL_ID = '1157749239598821516';
 const VERIFIED_ROLE_ID = '1531700897623572700';
 const UNVERIFIED_ROLE_ID = '1532179332460576913';
 const ROLE_LOG_CHANNEL_ID = '1532182270209949758';
@@ -29,14 +27,8 @@ function createMockMember({
   addRoleError?: Error;
   id?: string;
 } = {}) {
-  const roleOperations: string[] = [];
-  const addRole = mock((roleId: string) => {
-    roleOperations.push(`add:${roleId}`);
+  const addRole = mock((_roleId: string) => {
     if (addRoleError) return Promise.reject(addRoleError);
-    return Promise.resolve();
-  });
-  const removeRole = mock((roleId: string) => {
-    roleOperations.push(`remove:${roleId}`);
     return Promise.resolve();
   });
   const member = {
@@ -52,53 +44,13 @@ function createMockMember({
           (roleId === UNVERIFIED_ROLE_ID && hasUnverifiedRole),
       },
       add: addRole,
-      remove: removeRole,
     },
   } as unknown as GuildMember;
 
-  return { addRole, member, removeRole, roleOperations };
+  return { addRole, member };
 }
 
-function createMockThread({
-  parentId = INTRODUCE_YOURSELF_CHANNEL_ID,
-  ownerId = 'member123',
-  isBot = false,
-  hasVerifiedRole = false,
-  hasUnverifiedRole = true,
-}: {
-  parentId?: string;
-  ownerId?: string | null;
-  isBot?: boolean;
-  hasVerifiedRole?: boolean;
-  hasUnverifiedRole?: boolean;
-} = {}) {
-  const { addRole, member, removeRole, roleOperations } = createMockMember({
-    isBot,
-    hasVerifiedRole,
-    hasUnverifiedRole,
-  });
-  const fetchMember = mock(() => Promise.resolve(member));
-  const thread = {
-    id: 'thread123',
-    parentId,
-    ownerId,
-    guild: {
-      members: {
-        fetch: fetchMember,
-      },
-    },
-  } as unknown as ThreadChannel;
-
-  return {
-    addRole,
-    fetchMember,
-    removeRole,
-    roleOperations,
-    thread,
-  };
-}
-
-describe('introduction verification', () => {
+describe('member role management', () => {
   beforeEach(() => {
     resetMockDiscordClient();
   });
@@ -149,93 +101,6 @@ describe('introduction verification', () => {
       content: `❌ Failed to add <@&${UNVERIFIED_ROLE_ID}> to <@member123>: Missing Permissions`,
       allowedMentions: { parse: [] },
     });
-  });
-
-  test('replaces unverified with verified for an introduction thread creator', async () => {
-    const { addRole, fetchMember, removeRole, roleOperations, thread } =
-      createMockThread();
-
-    const assigned = await verifyIntroductionThreadCreator(thread);
-
-    expect(assigned).toBe(true);
-    expect(fetchMember).toHaveBeenCalledWith('member123');
-    expect(addRole).toHaveBeenCalledWith(
-      VERIFIED_ROLE_ID,
-      'Created a thread in the introduce-yourself channel'
-    );
-    expect(removeRole).toHaveBeenCalledWith(
-      UNVERIFIED_ROLE_ID,
-      'Completed introduction by creating a thread'
-    );
-    expect(roleOperations).toEqual([
-      `add:${VERIFIED_ROLE_ID}`,
-      `remove:${UNVERIFIED_ROLE_ID}`,
-    ]);
-  });
-
-  test('ignores threads created outside the introduction channel', async () => {
-    const { addRole, fetchMember, removeRole, thread } = createMockThread({
-      parentId: 'another-channel',
-    });
-
-    const assigned = await verifyIntroductionThreadCreator(thread);
-
-    expect(assigned).toBe(false);
-    expect(fetchMember).not.toHaveBeenCalled();
-    expect(addRole).not.toHaveBeenCalled();
-    expect(removeRole).not.toHaveBeenCalled();
-  });
-
-  test('ignores threads without a creator', async () => {
-    const { addRole, fetchMember, removeRole, thread } = createMockThread({
-      ownerId: null,
-    });
-
-    const assigned = await verifyIntroductionThreadCreator(thread);
-
-    expect(assigned).toBe(false);
-    expect(fetchMember).not.toHaveBeenCalled();
-    expect(addRole).not.toHaveBeenCalled();
-    expect(removeRole).not.toHaveBeenCalled();
-  });
-
-  test('only removes unverified from an already verified member', async () => {
-    const { addRole, fetchMember, removeRole, thread } = createMockThread({
-      hasVerifiedRole: true,
-    });
-
-    const updated = await verifyIntroductionThreadCreator(thread);
-
-    expect(updated).toBe(true);
-    expect(fetchMember).toHaveBeenCalledWith('member123');
-    expect(addRole).not.toHaveBeenCalled();
-    expect(removeRole).toHaveBeenCalledWith(
-      UNVERIFIED_ROLE_ID,
-      'Completed introduction by creating a thread'
-    );
-  });
-
-  test('does nothing when the member is already fully verified', async () => {
-    const { addRole, removeRole, thread } = createMockThread({
-      hasVerifiedRole: true,
-      hasUnverifiedRole: false,
-    });
-
-    const updated = await verifyIntroductionThreadCreator(thread);
-
-    expect(updated).toBe(false);
-    expect(addRole).not.toHaveBeenCalled();
-    expect(removeRole).not.toHaveBeenCalled();
-  });
-
-  test('does not assign the role to bots', async () => {
-    const { addRole, removeRole, thread } = createMockThread({ isBot: true });
-
-    const assigned = await verifyIntroductionThreadCreator(thread);
-
-    expect(assigned).toBe(false);
-    expect(addRole).not.toHaveBeenCalled();
-    expect(removeRole).not.toHaveBeenCalled();
   });
 
   test('registers a member-join listener', async () => {
@@ -295,22 +160,11 @@ describe('introduction verification', () => {
     expect(mockDiscordChannel.send).not.toHaveBeenCalled();
   });
 
-  test('registers a thread-create listener', async () => {
-    const { addRole, thread } = createMockThread();
+  test('does not register thread-based verification automation', async () => {
     registerVerificationListeners(mockDiscordClient as unknown as Client);
 
-    const handled = await mockDiscordClient.emit('threadCreate', thread, true);
+    const handled = await mockDiscordClient.emit('threadCreate', {});
 
-    expect(handled).toBe(true);
-    expect(addRole).toHaveBeenCalledTimes(1);
-  });
-
-  test('ignores an existing thread when the bot gains access to it', async () => {
-    const { addRole, thread } = createMockThread();
-    registerVerificationListeners(mockDiscordClient as unknown as Client);
-
-    await mockDiscordClient.emit('threadCreate', thread, false);
-
-    expect(addRole).not.toHaveBeenCalled();
+    expect(handled).toBe(false);
   });
 });

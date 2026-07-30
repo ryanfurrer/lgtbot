@@ -1,7 +1,6 @@
-import { Client, Events, GuildMember, ThreadChannel } from 'discord.js';
+import { Client, Events, GuildMember } from 'discord.js';
 import { logger } from './logger';
 
-const INTRODUCE_YOURSELF_CHANNEL_ID = '1157749239598821516';
 const VERIFIED_ROLE_ID = '1531700897623572700';
 const UNVERIFIED_ROLE_ID = '1532179332460576913';
 const ROLE_LOG_CHANNEL_ID = '1532182270209949758';
@@ -23,47 +22,41 @@ async function sendRoleLog(client: Client, content: string): Promise<void> {
   });
 }
 
-async function reportRoleChangeFailure({
+async function reportRoleAssignmentFailure({
   member,
-  action,
   roleId,
   error,
 }: {
   member: GuildMember;
-  action: 'add' | 'remove';
   roleId: string;
   error: unknown;
 }): Promise<void> {
-  const actionDescription =
-    action === 'add' ? `add <@&${roleId}> to` : `remove <@&${roleId}> from`;
   const errorMessage =
     error instanceof Error ? error.message : 'Unknown Discord API error';
 
   try {
     await sendRoleLog(
       member.guild.client,
-      `❌ Failed to ${actionDescription} <@${member.id}>: ${errorMessage.slice(0, 500)}`
+      `❌ Failed to add <@&${roleId}> to <@${member.id}>: ${errorMessage.slice(0, 500)}`
     );
   } catch (logError) {
     logger.error(logError, 'Error sending role assignment failure log');
   }
 }
 
-async function changeMemberRole({
+async function addMemberRole({
   member,
-  action,
   roleId,
   reason,
 }: {
   member: GuildMember;
-  action: 'add' | 'remove';
   roleId: string;
   reason: string;
 }): Promise<void> {
   try {
-    await member.roles[action](roleId, reason);
+    await member.roles.add(roleId, reason);
   } catch (error) {
-    await reportRoleChangeFailure({ member, action, roleId, error });
+    await reportRoleAssignmentFailure({ member, roleId, error });
     throw error;
   }
 }
@@ -79,9 +72,8 @@ export async function assignUnverifiedRole(
     return false;
   }
 
-  await changeMemberRole({
+  await addMemberRole({
     member,
-    action: 'add',
     roleId: UNVERIFIED_ROLE_ID,
     reason: 'Joined the server',
   });
@@ -89,55 +81,6 @@ export async function assignUnverifiedRole(
   logger.info(
     { memberId: member.id },
     'Assigned unverified role to new member'
-  );
-
-  return true;
-}
-
-export async function verifyIntroductionThreadCreator(
-  thread: ThreadChannel
-): Promise<boolean> {
-  if (thread.parentId !== INTRODUCE_YOURSELF_CHANNEL_ID || !thread.ownerId) {
-    return false;
-  }
-
-  const member = await thread.guild.members.fetch(thread.ownerId);
-
-  if (member.user.bot) {
-    return false;
-  }
-
-  const needsVerifiedRole = !member.roles.cache.has(VERIFIED_ROLE_ID);
-  const hasUnverifiedRole = member.roles.cache.has(UNVERIFIED_ROLE_ID);
-
-  if (!needsVerifiedRole && !hasUnverifiedRole) {
-    return false;
-  }
-
-  if (needsVerifiedRole) {
-    await changeMemberRole({
-      member,
-      action: 'add',
-      roleId: VERIFIED_ROLE_ID,
-      reason: 'Created a thread in the introduce-yourself channel',
-    });
-  }
-
-  if (hasUnverifiedRole) {
-    await changeMemberRole({
-      member,
-      action: 'remove',
-      roleId: UNVERIFIED_ROLE_ID,
-      reason: 'Completed introduction by creating a thread',
-    });
-  }
-
-  logger.info(
-    {
-      memberId: member.id,
-      threadId: thread.id,
-    },
-    'Updated roles for introduction thread creator'
   );
 
   return true;
@@ -168,16 +111,6 @@ export function registerVerificationListeners(client: Client) {
       await assignUnverifiedRole(member);
     } catch (error) {
       logger.error(error, 'Error assigning unverified role to new member');
-    }
-  });
-
-  client.on(Events.ThreadCreate, async (thread, newlyCreated) => {
-    if (!newlyCreated) return;
-
-    try {
-      await verifyIntroductionThreadCreator(thread);
-    } catch (error) {
-      logger.error(error, 'Error verifying introduction thread creator');
     }
   });
 
